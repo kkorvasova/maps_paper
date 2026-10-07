@@ -35,6 +35,12 @@ DF_FOLDER = os.path.join(PROJECT_ROOT, "dataframes")
 OP_MAP_FOLDER = os.path.expanduser(
     "~/work/Eduardo_Fernandez/new_method/monkeys_OP"
 )
+# Receptive fields and schematic array positions (monkey L only; from the
+# Chen et al. V1_V4_1024_electrode_resting_state_data metadata)
+L_METADATA_FOLDER = os.path.expanduser(
+    "~/work/Eduardo_Fernandez/data/Roelfsema_data/"
+    "V1_V4_1024_electrode_resting_state_data/metadata"
+)
 PAPER_DIR = os.path.join(PROJECT_ROOT, "paper")
 FIG_DIR = os.path.join(PAPER_DIR, "figures")
 TABLE_DIR = os.path.join(PAPER_DIR, "tables")
@@ -60,6 +66,22 @@ MONKEY_COLORS = P["colors_monkeys"]
 MAX_DIM = P["method"]["max_dim"]
 
 SIG_THRESH = 5.0  # percentile threshold used throughout ("beats control")
+
+# Array inclusion: only arrays with MORE than half of their channels oriented
+# (> MIN_ORIENTED) enter the paper analyses (counts from
+# code/oriented_channel_counts.csv).
+MIN_ORIENTED = N_CH // 2
+ORIENTED_COUNTS = pd.read_csv(os.path.join(CODE_DIR, "oriented_channel_counts.csv"))
+INCLUDED_ARRAYS = {
+    m: sorted(int(a) for a in ORIENTED_COUNTS.loc[
+        (ORIENTED_COUNTS.monkey == m) & (ORIENTED_COUNTS.n_oriented > MIN_ORIENTED),
+        "array"])
+    for m in MONKEYS
+}
+
+
+def is_included(monkey, array):
+    return int(array) in INCLUDED_ARRAYS.get(monkey, [])
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -90,6 +112,33 @@ def load_op(monkey, array):
             monkey, array, OP_MAP_FOLDER,
             selectivity_min=SEL_MIN, num_jump_max=JUMP_MAX, n_channels=N_CH)
     return _cache[key]
+
+
+def load_rf_L():
+    """Per-electrode RF centre / size for monkey L, keyed by Array_ID + Electrode_ID."""
+    if "rf_L" not in _cache:
+        rf = pd.read_csv(os.path.join(L_METADATA_FOLDER, "receptive_fields",
+                                      "combined_L_RF.csv"))
+        rf = rf.rename(columns={"RF center X (degrees)": "rf_x",
+                                "RF center Y (degrees)": "rf_y",
+                                "RF size (degrees)": "rf_size"})
+        rf["ecc"] = np.hypot(rf.rf_x, rf.rf_y)
+        _cache["rf_L"] = rf[["Array_ID", "Electrode_ID", "rf_x", "rf_y",
+                             "rf_size", "ecc", "SNR"]]
+    return _cache["rf_L"]
+
+
+def load_array_positions_L():
+    """Schematic (not exact) array positions in the cortex, monkey L."""
+    pos = pd.read_csv(os.path.join(L_METADATA_FOLDER, "experimental_setup",
+                                   "approximate_array_positions_L.csv"))
+    return pos.rename(columns={"x (um)": "x_um", "y (um)": "y_um"}).set_index("Array_ID")
+
+
+def oriented_electrode_ids(monkey, array):
+    """Electrode_IDs of the oriented channels of an array (OP-map row order)."""
+    df = pd.read_csv(os.path.join(OP_MAP_FOLDER, monkey, f"OP_prop_OG_array{array}.csv"))
+    return df.Electrode_ID.values[load_op(monkey, array) >= 0]
 
 
 def get_layout(monkey, array):

@@ -1,0 +1,26 @@
+{
+  "main_bin": 100,
+  "norm_main": "L2",
+  "n_cells_total": 63,
+  "n_arrays": 8,
+  "n_estimable_arrays": 4,
+  "monkeys": [
+    "L",
+    "N",
+    "F"
+  ],
+  "inclusion_rule": "n_oriented > 32",
+  "n_arrays_per_monkey": {
+    "L": 5,
+    "N": 2,
+    "F": 1
+  },
+  "min_oriented_significant": 33,
+  "p10_oriented_significant": 33,
+  "n_qualifying_stability_arrays": 8,
+  "n_eceo_cells": 21,
+  "n_eceo_both_sig": 8,
+  "n_eceo_ec_only": 4,
+  "n_eceo_eo_only": 1,
+  "sig_thresh": 5.0
+}

@@ -1,5 +1,6 @@
 """
-Figure 2 — estimation is real but array-specific.
+Alternative (unused) version of the per-array percentile figure: blue/red
+heatmap. Kept for reference; the trial-level dot plot in Fig. 1F replaces it.
 Min-over-pairs percentile grid (array x condition) for each monkey, averaged
 across recording days, at the main FR bin and L2 norm.
 """
@@ -61,5 +62,5 @@ cbar.ax.tick_params(labelsize=6.5)
 fig.suptitle(f"Min-over-pairs test, averaged across recording days  "
              f"(bin = {MAIN_BIN} ms, {NORM})", fontsize=10, y=0.99)
 
-save_fig(fig, "fig2_percentile_grids")
+save_fig(fig, "figX_percentile_heatmap")
 plt.close(fig)

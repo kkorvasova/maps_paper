@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 
 import lib
-from lib import (MONKEYS, V1_ARRAYS, DATES, BIN_SIZES, MAX_DIM, SIG_THRESH,
+from lib import (MONKEYS, DATES, BIN_SIZES, MAX_DIM, SIG_THRESH,
                   TABLE_DIR, minpair_percentile, n_oriented, per_pair_percentile,
-                  all_pairs, pair_label)
+                  all_pairs, pair_label, MIN_ORIENTED, INCLUDED_ARRAYS, is_included)
 
 os.makedirs(TABLE_DIR, exist_ok=True)
 compact = lib.load_compact()
@@ -22,7 +22,8 @@ REAL_DF, CTRL_VEC = compact["real"], compact["ctrl"]
 pca_store = lib.load_pca_store()
 
 CELLS = sorted({(m, d, int(a), c, int(b))
-                for (m, d, a, c, b) in pca_store.keys()})
+                for (m, d, a, c, b) in pca_store.keys() if is_included(m, a)})
+print(f"included arrays (>{MIN_ORIENTED} oriented channels): {INCLUDED_ARRAYS}")
 print(f"total (monkey,date,array,condition,bin) cells: {len(CELLS)}")
 
 
@@ -106,11 +107,10 @@ print(f"10th percentile of oriented count among significant cells: {p10_sig}")
 
 
 # ─────────────────────────────────────────────────────────────────
-# 5. Day-to-day stability (arrays with >=25 oriented channels, >1 day)
+# 5. Day-to-day stability (included arrays, >1 day)
 # ─────────────────────────────────────────────────────────────────
 print("\n[5/6] day-to-day stability ...")
 STAB_NPC = MAX_DIM
-MIN_ORIENTED_STAB = 25
 TOPK = 3
 stab_pairs = all_pairs(STAB_NPC)
 
@@ -122,15 +122,13 @@ def day_error_vector(monkey, dt, arr, cond, bin_ms, norm):
 
 qualifying = []
 for monkey in MONKEYS:
-    arrays = sorted({int(a) for (m, d, a, c, b) in pca_store if m == monkey and b == MAIN_BIN})
+    arrays = sorted({int(a) for (m, d, a, c, b) in CELLS if m == monkey and b == MAIN_BIN})
     for arr in arrays:
-        if n_oriented(monkey, arr, MAIN_BIN) < MIN_ORIENTED_STAB:
-            continue
         days = [dt for dt in DATES[monkey]["RS"]
                 if lib.get_scores(monkey, dt, arr, "all", MAIN_BIN) is not None]
         if len(days) > 1:
             qualifying.append((monkey, arr, days))
-print("qualifying arrays (>=25 oriented, >1 day):", [(m, a) for (m, a, _) in qualifying])
+print(f"qualifying arrays (>{MIN_ORIENTED} oriented, >1 day):", [(m, a) for (m, a, _) in qualifying])
 
 pool_rows = []
 for (monkey, arr, days) in qualifying:
@@ -161,7 +159,7 @@ print("\n[6/6] EC vs EO ...")
 eceo_rows = []
 for monkey in MONKEYS:
     for dt in DATES[monkey]["RS"]:
-        arrays = sorted({int(a) for (m, d, a, c, b) in pca_store
+        arrays = sorted({int(a) for (m, d, a, c, b) in CELLS
                           if m == monkey and d == str(dt) and b == MAIN_BIN})
         for arr in arrays:
             if lib.get_scores(monkey, dt, arr, "EC", MAIN_BIN) is None:
@@ -182,6 +180,83 @@ print(f"significant in both: {n_both_sig} | EC-only: {n_ec_only} | EO-only: {n_e
 
 
 # ─────────────────────────────────────────────────────────────────
+# 7. Estimability of ALL arrays (incl. those below the inclusion cutoff),
+#    for the figure motivating the cutoff and the retinotopy panels
+# ─────────────────────────────────────────────────────────────────
+print("\n[7/7] estimability of all arrays ...")
+rf_L = lib.load_rf_L()
+rows = []
+for monkey in MONKEYS:
+    arrays = sorted({int(a) for (m, d, a, c, b) in pca_store if m == monkey and b == MAIN_BIN})
+    for arr in arrays:
+        pcts = [minpair_percentile(REAL_DF, CTRL_VEC, m, d, a, c, MAIN_BIN, MAX_DIM, NORM_MAIN)
+                for (m, d, a, c, b) in pca_store
+                if m == monkey and int(a) == arr and b == MAIN_BIN]
+        pcts = np.array([p for p in pcts if not np.isnan(p)])
+        row = dict(monkey=monkey, array=arr, n_oriented=n_oriented(monkey, arr, MAIN_BIN),
+                   included=is_included(monkey, arr), n_cells=len(pcts),
+                   frac_sig=float(np.mean(pcts < SIG_THRESH)), median_pct=float(np.median(pcts)))
+        if monkey == "L":
+            ids = lib.oriented_electrode_ids(monkey, arr)
+            rfa = rf_L[rf_L.Electrode_ID.isin(ids)]
+            row.update(rf_x=rfa.rf_x.median(), rf_y=rfa.rf_y.median(),
+                       ecc=rfa.ecc.median(), rf_size=rfa.rf_size.median())
+        rows.append(row)
+all_arrays = pd.DataFrame(rows)
+all_arrays.to_csv(os.path.join(TABLE_DIR, "estimability_all_arrays.csv"), index=False)
+print(all_arrays.round(2).to_string(index=False))
+
+
+# ─────────────────────────────────────────────────────────────────
+# 8. Channel-level reconstruction error vs RF size / SNR (monkey L,
+#    included arrays). Per channel: circular |estimated - measured OP| of
+#    the best-pair map, averaged over that array's significant cells.
+# ─────────────────────────────────────────────────────────────────
+print("\n[8/8] channel-level error vs RF properties (monkey L) ...")
+from scipy.stats import spearmanr
+from lib import load_op, get_scores, derived_map
+rf_L = lib.load_rf_L().set_index("Electrode_ID")
+rows = []
+for arr in INCLUDED_ARRAYS["L"]:
+    op = load_op("L", arr)
+    eids = pd.read_csv(os.path.join(lib.OP_MAP_FOLDER, "L",
+                                    f"OP_prop_OG_array{arr}.csv")).Electrode_ID.values
+    errs = []
+    for (m, d, a, c, b) in CELLS:
+        if m != "L" or a != arr or b != MAIN_BIN:
+            continue
+        _, pct, bp, _ = minpair_percentile(REAL_DF, CTRL_VEC, m, d, a, c, MAIN_BIN, MAX_DIM,
+                                           NORM_MAIN, return_details=True)
+        if not pct < SIG_THRESH:
+            continue
+        st = get_scores(m, d, a, c, MAIN_BIN)
+        oi = st["oriented_idx"]
+        est = derived_map(st["scores"], oi, op[oi], *bp)
+        dd = np.abs(est - op) % 180
+        errs.append(np.where(op >= 0, np.minimum(dd, 180 - dd), np.nan))
+    if not errs:
+        continue
+    err = np.nanmean(errs, axis=0)
+    for ch in np.where(op >= 0)[0]:
+        r = rf_L.loc[eids[ch]]
+        rows.append(dict(array=arr, channel=ch, electrode_id=eids[ch], error=err[ch],
+                         n_sig_cells=len(errs), rf_size=r.rf_size, snr=r.SNR, ecc=r.ecc))
+chan = pd.DataFrame(rows)
+chan.to_csv(os.path.join(TABLE_DIR, "channel_errors_L.csv"), index=False)
+chan_stats = {}
+for feat in ["rf_size", "snr"]:
+    d = chan.dropna(subset=[feat])
+    x = d[feat] - d.groupby("array")[feat].transform("mean")
+    y = d.error - d.groupby("array").error.transform("mean")
+    rho, p = spearmanr(x, y)
+    per = {int(a): float(spearmanr(g[feat], g.error)[0]) for a, g in d.groupby("array")}
+    chan_stats[feat] = dict(rho_within=float(rho), p=float(p), n=int(len(d)), per_array_rho=per)
+    print(f"  {feat}: within-array rho={rho:+.2f} p={p:.3g} n={len(d)}  per array {per}")
+with open(os.path.join(TABLE_DIR, "channel_stats_L.json"), "w") as f:
+    json.dump(chan_stats, f, indent=1)
+
+
+# ─────────────────────────────────────────────────────────────────
 # Headline numbers -> JSON
 # ─────────────────────────────────────────────────────────────────
 headline = dict(
@@ -191,7 +266,8 @@ headline = dict(
     n_arrays=n_arrays,
     n_estimable_arrays=n_estimable,
     monkeys=MONKEYS,
-    n_arrays_per_monkey={m: len(V1_ARRAYS[m]) for m in MONKEYS},
+    inclusion_rule=f"n_oriented > {MIN_ORIENTED}",
+    n_arrays_per_monkey={m: len(INCLUDED_ARRAYS[m]) for m in MONKEYS},
     min_oriented_significant=min_sig,
     p10_oriented_significant=p10_sig,
     n_qualifying_stability_arrays=len(qualifying),
